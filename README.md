@@ -1,5 +1,7 @@
 # Automated Lifecycle Email System for a Cross-Border E-Commerce Logistics Operation
 **`n8n` · `PostgreSQL` · `LLM API` · `email gateway`**
+
+> **Workflow exports** in `/workflows` are sanitized copies (credentials and endpoints replaced with placeholders). Published set: all 6 segmentation workflows + 5 representative campaigns (the country-market campaigns share one pattern, so only Kenya is included). Import any `.json` into n8n to inspect the architecture.
  
 > A self-running marketing pipeline that segments customers by behaviour and lifecycle stage, then generates and sends personalised, LLM-written emails per segment, fully automated, owned by one person.
  
