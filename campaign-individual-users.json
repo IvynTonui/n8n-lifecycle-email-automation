@@ -1,0 +1,542 @@
+{
+  "name": "[CAMPAIGN] Individual Users",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "1a56efe8-132a-4594-bfe3-6ade2d86c5ac",
+      "name": "Fri 03:00 UTC (06:00 EAT)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2352,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "segment-name",
+              "name": "segment_name",
+              "value": "individual_users",
+              "type": "string"
+            },
+            {
+              "id": "cooldown-days",
+              "name": "cooldown_days",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "throttle-hours",
+              "name": "throttle_hours",
+              "value": 18,
+              "type": "number"
+            },
+            {
+              "id": "test-mode",
+              "name": "test_mode",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "test-recipient",
+              "name": "test_recipient_email",
+              "value": "test@example.com",
+              "type": "string"
+            },
+            {
+              "id": "shadow-mode",
+              "name": "shadow_mode",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "campaign-id",
+              "name": "campaign_id",
+              "value": "={{ $workflow.id }}-{{ $now.format('yyyyMMdd-HHmmss') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "15332ef0-03a1-4648-88dd-2b014a905e4f",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2144,
+        464
+      ],
+      "notes": "Edit segment_name to target a different segment.\ntest_mode=true: all sends go to test_recipient_email.\nshadow_mode=true: AI service runs but no email is sent (logs only)."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT us.user_id, us.email, us.segment_name, au.name AS user_name, au.country AS user_country\nFROM user_segments us\nINNER JOIN auth_user au ON au.id = us.user_id\nWHERE us.segment_name = '{{ $json.segment_name }}'\n  AND (us.campaign_last_sent_at IS NULL\n       OR us.campaign_last_sent_at < NOW() - INTERVAL '{{ $json.cooldown_days }} days')\n  AND NOT EXISTS (\n      SELECT 1 FROM user_segments us2\n      WHERE us2.user_id = us.user_id\n        AND us2.campaign_last_sent_at > NOW() - INTERVAL '{{ $json.throttle_hours }} hours'\n  );",
+        "options": {}
+      },
+      "id": "85eb2e28-01b2-417f-bd52-cbc352e98dc1",
+      "name": "Fetch eligible recipients",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -1936,
+        464
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-recipients",
+              "leftValue": "={{ $json.user_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "22a75a6c-e638-4d37-bc28-1e596e47a8bf",
+      "name": "Any recipients?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1712,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the AI prompt with structured email schema\n// Each segment gets a tailored prompt that produces structured pieces,\n// which a downstream step assembles into a clean HTML template.\n\nconst segmentName = $('Config').item.json.segment_name;\n\nconst brandContext = `\nYou write lifecycle, segmented campaign, and customer activation emails for {{COMPANY_NAME}}.\n\n{{COMPANY_NAME}} is a China-to-Africa shipping, freight coordination, export preparation, and delivery visibility platform.\n\nREAL CAPABILITIES:\nUse only the capabilities listed here. Never invent additional services.\n\nCore capabilities:\n- China warehouses in Guangzhou where customers can send goods from Chinese e-commerce platforms, direct suppliers, and factories\n- Support for shipping goods from China into African markets\n- Air freight options, often 7-14 days depending on route and operating conditions\n- Sea freight options, often 40-60 days depending on route and operating conditions\n- Export preparation and freight coordination from China\n- Customs clearance support or handling where applicable\n- Tracking dashboard with shipment milestones\n- Shipping dispatches usually happen 1-2 times per week\n- Countries served: Ghana, Kenya, South Africa, Nigeria, Zimbabwe, Zambia\n\nCountry-specific capabilities:\n- Ghana: Accra warehouse, COD in GHS, self-operated last-mile delivery in Accra\n- Kenya: Nairobi warehouse, COD in KES, self-operated last-mile delivery in Nairobi\n- South Africa: Johannesburg warehouse, China-to-South Africa shipping support, freight planning, tracking visibility\n- Nigeria: China-to-Nigeria shipping support, customs handling, air or sea options, tracking visibility\n- Zambia: China-to-Zambia shipping support, customs handling, air or sea options, tracking visibility\n- Zimbabwe: China-to-Zimbabwe shipping support, customs handling, air or sea options, tracking visibility\n\nDO NOT CLAIM:\n- Do not mention package consolidation\n- Do not mention cargo consolidation\n- Do not say {{COMPANY_NAME}} combines packages from multiple suppliers\n- Do not say {{COMPANY_NAME}} groups several orders into one shipment\n- Do not say {{COMPANY_NAME}} merges shipments\n- Do not promise fixed delivery dates\n- Do not promise guaranteed transit times\n- Do not mention discounts, promo codes, loyalty programs, free shipping, or unrealistic savings\n- Do not claim COD outside Ghana or Kenya unless explicitly instructed\n- Do not claim self-operated last-mile delivery outside Accra or Nairobi unless explicitly instructed\n- Do not invent warehouse locations, prices, dates, routes, discounts, or service guarantees\n\nVOICE:\nConfident, warm, direct, and operational.\nTreat the reader as a business person.\nUse plain English.\nUse short sentences.\nSound like a logistics partner, not a promo brand.\nFocus on planning, route choice, export preparation, tracking visibility, customs handling, and shipment workflow.\nAvoid hype and exaggerated promises.\n\nEMAIL STRUCTURE:\nYou must produce the following fields:\n- subject: under 50 characters, action-oriented, no clickbait\n- headline_kicker: short tagline above the headline\n- headline: H1-style title, under 60 characters\n- intro_paragraph: 2-3 sentences setting up the email's value\n- callout_title: short title for an optional bullet section. Use \"\" if no bullets are needed.\n- callout_bullets: 0-3 short bullets. Each bullet must be under 18 words.\n- closing_paragraph: 1-2 sentences leading into the CTA\n- cta_label: 2-4 words on the button\n- cta_url_token: exactly one of: plan-shipment, get-quote, view-tracking, view-dashboard\n\nCTA TOKEN RULES:\n- plan-shipment: use when asking the user to prepare, start, or plan a shipment\n- get-quote: use when the email focuses on pricing, freight estimate, or route cost\n- view-tracking: use when the email focuses on shipment progress\n- view-dashboard: use when the email asks the user to check their account, shipment history, or dashboard\n\nWRITING RULES:\n- Mention only capabilities listed above\n- Keep the email practical and specific\n- Do not use \"no pressure\", \"not a sales pitch\", \"we miss you\", \"just checking in\", or \"last chance\"\n- Do not use hype, fake urgency, or exaggerated claims\n- Do not use \"reply to this email\" as a CTA because the sending address may be noreply\n- Do not include HTML in any field\n- Do not include meta-commentary about the email\n- Do not start every email with \"We help\"\n- Avoid repeating the same capability in the intro, bullets, and closing\n- When mentioning Chinese e-commerce platforms, mention them together as Taobao, Pinduoduo, and 1688, and also mention direct suppliers or factories\n`;\n\nconst prompts = {\n  delivered_orders: {\n    systemPrompt: brandContext,\n    prompt: `Email to a customer whose shipment has just arrived in Africa from China. Acknowledge the shipment arrival in the intro, then give them one concrete next step, such as checking their dashboard or planning their next shipment. Skip the callout box unless you have 2-3 genuinely useful parallel points. Do not mention package consolidation. CTA: plan-shipment.`\n  },\n\n  inactive_users: {\n    systemPrompt: brandContext,\n    prompt: `Email to a customer who has not shipped in 30+ days. Lead with one practical reason to prepare their next China shipment early, such as choosing the right freight mode, preparing goods before dispatch, or checking shipment timing. The callout box can list 2-3 concrete actions they can take. Do not mention package consolidation. CTA: plan-shipment.`\n  },\n\n  repeat_customers: {\n    systemPrompt: brandContext,\n    prompt: `Email to a customer who has shipped multiple times. Treat them as experienced. Give one operationally useful suggestion, such as reviewing shipment milestones, choosing air for urgent stock, or planning sea freight earlier for larger cargo. Do not mention package consolidation. CTA: view-dashboard.`\n  },\n\n  agents: {\n    systemPrompt: brandContext + `\\n\\nAUDIENCE NOTE: This is a shipping AGENT or partner who refers customers, not an end customer.`,\n    prompt: `Brief partner update for a {{COMPANY_NAME}} shipping agent. Acknowledge the partnership in one sentence in the intro. The callout box may list things they can show clients, such as dashboard tracking, customs handling where applicable, air or sea options, and local payment options where available. Do not mention package consolidation. CTA: view-dashboard.`\n  },\n\n  country_gh: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers in Ghana. Lead with Ghana-relevant support: the Accra warehouse, COD in GHS, self-operated last-mile delivery in Accra, customs handling where applicable, and shipment milestone visibility. Do not mention package consolidation. CTA: plan-shipment.`\n  },\n\n  country_ke: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers in Kenya. Lead with Kenya-relevant support: the Nairobi warehouse, COD in KES, self-operated last-mile delivery in Nairobi, customs handling where applicable, and shipment milestone visibility. Do not mention package consolidation. CTA: plan-shipment.`\n  },\n\n  country_za: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers in South Africa. Focus on China-to-South Africa shipping support, the Johannesburg warehouse where relevant, freight planning, tracking visibility, and choosing air or sea based on urgency. Do not mention COD, self-operated last-mile delivery, or package consolidation. CTA: plan-shipment.`\n  },\n\n  country_ng: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers in Nigeria. Focus on China-to-Nigeria shipping support, customs handling where applicable, tracking visibility, and air or sea freight options. Do not mention COD, self-operated last-mile delivery, or package consolidation. CTA: plan-shipment.`\n  },\n\n  country_zm: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers in Zambia. Focus on China-to-Zambia shipping support, customs handling where applicable, air or sea freight options, and shipment tracking visibility. Do not mention COD, self-operated last-mile delivery, or package consolidation. CTA: plan-shipment.`\n  },\n\n  country_zw: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers in Zimbabwe. Focus on China-to-Zimbabwe shipping support, customs handling where applicable, air or sea freight options, and shipment tracking visibility. Do not mention COD, self-operated last-mile delivery, or package consolidation. CTA: plan-shipment.`\n  },\n\n  country_cn: {\n    systemPrompt: brandContext + `\\n\\nAUDIENCE NOTE: These users are registered with a China-based account. They are likely suppliers, warehouse-side users, or business partners on the China side.`,\n    prompt: `Brief professional note for a partner on the China side. Acknowledge the working relationship. Reference shipment processing, export preparation, or dashboard visibility. Do not mention package consolidation. CTA: view-dashboard.`\n  },\n\n  individual_users: {\n    systemPrompt: brandContext,\n    prompt: `Email to individual personal-use customers. Focus on one simple capability that helps personal shoppers, such as sending goods to the Guangzhou warehouse from Taobao, Pinduoduo, 1688, direct suppliers, or factories, plus checking shipment milestones. Do not mention package consolidation. CTA: view-dashboard.`\n  },\n\n  company_users: {\n    systemPrompt: brandContext,\n    prompt: `Email to business customers shipping commercial goods from China. Focus on freight planning, weekly dispatch rhythm, customs handling where applicable, tracking visibility, and choosing the right shipping mode. Do not mention package consolidation. CTA: plan-shipment.`\n  },\n\n  price_sensitive_users: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers likely to care about shipment cost planning. Focus on choosing the right route, comparing air and sea options, and preparing cargo details before requesting a quote. Do not mention discounts, unrealistic savings, or package consolidation. CTA: get-quote.`\n  },\n\n  tracking_engaged_users: {\n    systemPrompt: brandContext,\n    prompt: `Email to customers who frequently check shipment progress. Focus on shipment milestones, dashboard visibility, and using tracking information to plan receiving or delivery. Do not mention real-time guarantees or package consolidation. CTA: view-tracking.`\n  },\n\n  _default: {\n    systemPrompt: brandContext,\n    prompt: `Brief check-in to a {{COMPANY_NAME}} customer. Reference one concrete {{COMPANY_NAME}} capability, such as freight planning, export preparation, customs handling where applicable, or shipment milestone visibility. Do not mention package consolidation. CTA: plan-shipment.`\n  }\n};\n\nconst config = prompts[segmentName] || prompts._default;\n\nreturn [\n  {\n    json: {\n      prompt: config.prompt,\n      systemPrompt: config.systemPrompt,\n      schema: {\n        type: 'object',\n        additionalProperties: false,\n        properties: {\n          subject: {\n            type: 'string',\n            maxLength: 50\n          },\n          headline_kicker: {\n            type: 'string',\n            maxLength: 50\n          },\n          headline: {\n            type: 'string',\n            maxLength: 60\n          },\n          intro_paragraph: {\n            type: 'string'\n          },\n          callout_title: {\n            type: 'string',\n            maxLength: 50\n          },\n          callout_bullets: {\n            type: 'array',\n            items: {\n              type: 'string',\n              maxLength: 90\n            },\n            maxItems: 3\n          },\n          closing_paragraph: {\n            type: 'string'\n          },\n          cta_label: {\n            type: 'string',\n            maxLength: 30\n          },\n          cta_url_token: {\n            type: 'string',\n            enum: [\n              'plan-shipment',\n              'get-quote',\n              'view-tracking',\n              'view-dashboard'\n            ]\n          }\n        },\n        required: [\n          'subject',\n          'headline_kicker',\n          'headline',\n          'intro_paragraph',\n          'callout_title',\n          'callout_bullets',\n          'closing_paragraph',\n          'cta_label',\n          'cta_url_token'\n        ]\n      },\n      maxTokens: 900,\n      temperature: 0.45\n    }\n  }\n];"
+      },
+      "id": "807092e5-f024-4ccd-970d-a6cd04b94f5c",
+      "name": "Build AI prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1488,
+        368
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.example.com/ai/llm/structured",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"prompt\": {{ JSON.stringify($json.prompt) }},\n  \"systemPrompt\": {{ JSON.stringify($json.systemPrompt) }},\n  \"schema\": {{ JSON.stringify($json.schema) }},\n  \"maxTokens\": {{ $json.maxTokens }},\n  \"temperature\": {{ $json.temperature }}\n}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "edc719c4-3ddf-4294-a50e-08f5f4f5a29b",
+      "name": "Call AI service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1264,
+        368
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "oAuth2Api": {
+          "id": "FAKE_OAUTH2_CREDENTIAL_ID",
+          "name": "OAuth2 API"
+        }
+      },
+      "notes": "Real AI service call. Returns structured content matching the schema."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build per-recipient items: combines recipients with the AI service's structured content\n// Wraps the structured pieces in an HTML template before sending\n// Personalizes [First Name] / {{first_name}} placeholders with each recipient's actual name\n\nconst recipients = $('Fetch eligible recipients').all();\nconst aiResponse = $('Call AI service').first().json;\nconst config = $('Config').first().json;\n\nconst content = aiResponse.data || aiResponse;\n\n// CTA URL token → real URL\nconst CTA_URLS = {\n  'plan-shipment': 'https://app.example.com/auth/login',\n  'get-quote': 'https://app.example.com/estimates',\n  'view-tracking': 'https://app.example.com/tracker',\n  'view-dashboard': 'https://app.example.com/'\n};\n\n// Dedupe by email\nconst seen = new Set();\nconst uniqueRecipients = recipients.filter(item => {\n  const email = item.json.email;\n  if (!email || seen.has(email)) return false;\n  seen.add(email);\n  return true;\n});\n\n// Personalization helper — replace any common placeholder variant\nconst personalize = (text, firstName) => {\n  if (!text) return '';\n  return text\n    .replace(/\\[First Name\\]/gi, firstName)\n    .replace(/\\{\\{first_name\\}\\}/gi, firstName)\n    .replace(/\\{\\{firstName\\}\\}/gi, firstName)\n    .replace(/\\{first_name\\}/gi, firstName)\n    .replace(/\\{FirstName\\}/gi, firstName);\n};\n\n// Escape HTML to prevent injection from any field\nconst escapeHtml = (str) => {\n  if (!str) return '';\n  return String(str)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n};\n\n// Build the HTML email template\nconst buildHtml = (c, firstName, ctaUrl) => {\n  const headline = escapeHtml(personalize(c.headline, firstName));\n  const kicker = escapeHtml(personalize(c.headline_kicker || '', firstName));\n  const intro = escapeHtml(personalize(c.intro_paragraph, firstName));\n  const closing = escapeHtml(personalize(c.closing_paragraph, firstName));\n  const ctaLabel = escapeHtml(c.cta_label);\n\n  // Callout block — only render if there are bullets\n  const bullets = (c.callout_bullets || []).filter(b => b && b.trim());\n  let calloutBlock = '';\n  if (bullets.length > 0) {\n    const calloutTitle = escapeHtml(personalize(c.callout_title || '', firstName));\n    const bulletList = bullets\n      .map(b => `<li style=\"margin: 0 0 8px 0; color: #333; line-height: 1.5;\">${escapeHtml(personalize(b, firstName))}</li>`)\n      .join('');\n    calloutBlock = `\n      <table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"margin: 24px 0;\">\n        <tr>\n          <td style=\"background: #FFF4E6; border-left: 4px solid #FF6B1A; padding: 20px 24px; border-radius: 4px;\">\n            ${calloutTitle ? `<div style=\"color: #FF6B1A; font-weight: 600; font-size: 14px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;\">${calloutTitle}</div>` : ''}\n            <ul style=\"margin: 0; padding-left: 20px;\">${bulletList}</ul>\n          </td>\n        </tr>\n      </table>`;\n  }\n\n  return `\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"100%\" style=\"background: #f5f5f5; padding: 24px 0;\">\n  <tr>\n    <td align=\"center\">\n      <table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" width=\"600\" style=\"max-width: 600px; background: #ffffff; border-radius: 8px; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;\">\n\n        <!-- Orange header band -->\n        <tr>\n          <td style=\"background: #FF6B1A; padding: 28px 32px; text-align: center;\">\n            <div style=\"color: #ffffff; font-size: 18px; font-weight: 700; letter-spacing: 1px;\">{{COMPANY_NAME}}</div>\n            ${kicker ? `<div style=\"color: #ffffff; opacity: 0.9; font-size: 14px; margin-top: 6px;\">${kicker}</div>` : ''}\n          </td>\n        </tr>\n\n        <!-- Body -->\n        <tr>\n          <td style=\"padding: 32px;\">\n            <h1 style=\"color: #1a1a1a; font-size: 22px; font-weight: 600; margin: 0 0 16px 0; line-height: 1.3;\">${headline}</h1>\n\n            <p style=\"color: #444; font-size: 15px; line-height: 1.6; margin: 0 0 16px 0;\">Hi ${escapeHtml(firstName)},</p>\n\n            <p style=\"color: #444; font-size: 15px; line-height: 1.6; margin: 0;\">${intro}</p>\n\n            ${calloutBlock}\n\n            <p style=\"color: #444; font-size: 15px; line-height: 1.6; margin: 16px 0 24px 0;\">${closing}</p>\n\n            <!-- CTA button -->\n            <table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"margin: 8px 0;\">\n              <tr>\n                <td style=\"background: #FF6B1A; border-radius: 4px;\">\n                  <a href=\"${ctaUrl}\" style=\"display: inline-block; padding: 14px 32px; color: #ffffff; text-decoration: none; font-weight: 600; font-size: 15px;\">${ctaLabel}</a>\n                </td>\n              </tr>\n            </table>\n          </td>\n        </tr>\n\n        <!-- Footer -->\n        <tr>\n          <td style=\"padding: 20px 32px; background: #fafafa; border-top: 1px solid #eee; text-align: center;\">\n            <div style=\"color: #888; font-size: 13px; line-height: 1.5;\">Serving Ghana, Kenya, South Africa, Nigeria, Zimbabwe, Zambia.</div>\n          </td>\n        </tr>\n\n      </table>\n    </td>\n  </tr>\n</table>`;\n};\n\n// Build send items\nconst items = uniqueRecipients.map(item => {\n  const recipient = item.json;\n  const targetEmail = config.test_mode ? config.test_recipient_email : recipient.email;\n  const firstName = (recipient.user_name || '').trim().split(' ')[0] || 'there';\n  const ctaUrl = CTA_URLS[content.cta_url_token] || CTA_URLS['view-dashboard'];\n\n  const finalHtml = buildHtml(content, firstName, ctaUrl);\n\n  // Plain-text fallback for clients that prefer it\n  const bullets = (content.callout_bullets || [])\n    .filter(b => b && b.trim())\n    .map(b => `• ${personalize(b, firstName)}`)\n    .join('\\n');\n\n  const plainText = `Hi ${firstName},\n\n${personalize(content.intro_paragraph, firstName)}\n\n${content.callout_title && bullets ? content.callout_title.toUpperCase() + '\\n' + bullets + '\\n' : ''}\n${personalize(content.closing_paragraph, firstName)}\n\n${content.cta_label}: ${ctaUrl}\n\n— {{COMPANY_NAME}}\nServing Ghana, Kenya, South Africa, Nigeria, Zimbabwe, Zambia.`;\n\n  return {\n    json: {\n      user_id: recipient.user_id,\n      original_email: recipient.email,\n      target_email: targetEmail,\n      user_name: recipient.user_name,\n      first_name: firstName,\n      segment_name: recipient.segment_name,\n      subject: personalize(content.subject, firstName),\n      body_html: finalHtml,\n      body_text: plainText,\n      cta_label: content.cta_label,\n      cta_url: ctaUrl,\n      shadow_mode: config.shadow_mode\n    }\n  };\n});\n\nreturn items;"
+      },
+      "id": "8a7ac11d-36bc-4efa-9d34-cf94fd8102da",
+      "name": "Build per-recipient items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1056,
+        368
+      ],
+      "notes": "Combines recipients + AI service content into per-send items."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "shadow-check",
+              "leftValue": "={{ $json.shadow_mode }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e9bb0ceb-57d0-4234-81eb-e27fa77ad722",
+      "name": "Live mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -832,
+        368
+      ],
+      "notes": "If shadow_mode=true, skip the actual send and just log."
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "b026fedb-851f-4148-8bfe-4496e3392e38",
+      "name": "Loop one at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -608,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.example.com/notification/v1/send/company",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"notificationType\": \"email\",\n  \"recipient\": {{ JSON.stringify($json.target_email) }},\n  \"emailType\": \"customEmail\",\n  \"language\": \"en\",\n  \"data\": {\n    \"subject\": {{ JSON.stringify($json.subject) }},\n    \"body\": {{ JSON.stringify($json.body_html) }},\n    \"isHtml\": true,\n    \"includeUnsubscribe\": true\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "eeef68d9-ddab-4027-868e-584fce480ea7",
+      "name": "Send via Notification Service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -384,
+        256
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "id": "141880df-ee56-44af-a28a-5efbbb7a5c82",
+      "name": "Wait 2s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -160,
+        256
+      ],
+      "webhookId": "5ce2bf60-5450-4545-9b29-17b8f3b09640"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE user_segments\nSET campaign_last_sent_at = NOW()\nWHERE user_id = {{ $('Loop one at a time').item.json.user_id }}\n  AND segment_name = '{{ $('Loop one at a time').item.json.segment_name }}';",
+        "options": {}
+      },
+      "id": "1f19add9-1d4a-42ed-971f-c473d3ec0d09",
+      "name": "Update cooldown timestamp",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        80,
+        256
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Shadow mode: log generated content without sending\n-- Stores AI output for review during the 2-week shadow period\n-- TODO: create ai_email_drafts table when shadow mode is activated\nINSERT INTO ai_email_drafts\n    (segment_name, recipient_count, subject, body_html, generated_at)\nVALUES\n    ($1, $2, $3, $4, NOW());",
+        "options": {
+          "queryReplacement": "={{ $json.segment_name }},={{ $json.recipient_count || 0 }},={{ $json.subject }},={{ $json.body_html }}"
+        }
+      },
+      "id": "c4b00a06-1772-44a7-bfd2-9177cde77a17",
+      "name": "Shadow log (no send)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -608,
+        464
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      },
+      "disabled": true,
+      "notes": "Requires ai_email_drafts table to exist. Disable this node until table is created."
+    },
+    {
+      "parameters": {},
+      "id": "cddd1974-b47b-48cd-aace-f4d885ee0a44",
+      "name": "No recipients — clean exit",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1488,
+        560
+      ]
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        288,
+        256
+      ],
+      "id": "8e007c13-2e2a-411a-a278-2c0d2a572cc1",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Fetch eligible recipients",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch eligible recipients": {
+      "main": [
+        [
+          {
+            "node": "Any recipients?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any recipients?": {
+      "main": [
+        [
+          {
+            "node": "Build AI prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No recipients — clean exit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI prompt": {
+      "main": [
+        [
+          {
+            "node": "Call AI service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call AI service": {
+      "main": [
+        [
+          {
+            "node": "Build per-recipient items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build per-recipient items": {
+      "main": [
+        [
+          {
+            "node": "Live mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Live mode?": {
+      "main": [
+        [
+          {
+            "node": "Loop one at a time",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Shadow log (no send)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop one at a time": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Send via Notification Service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send via Notification Service": {
+      "main": [
+        [
+          {
+            "node": "Wait 2s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s": {
+      "main": [
+        [
+          {
+            "node": "Update cooldown timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update cooldown timestamp": {
+      "main": [
+        [
+          {
+            "node": "Loop one at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fri 03:00 UTC (06:00 EAT)": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Etc/UTC",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "c7bd3bdf-77ac-4239-ae94-2a2d15866204",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "FAKE_INSTANCE_ID"
+  },
+  "id": "eZj2mbntt7Oy2qsJ",
+  "tags": [
+    {
+      "updatedAt": "2026-05-01T12:46:32.188Z",
+      "createdAt": "2026-05-01T12:46:32.188Z",
+      "id": "XPtH8pPoYg8lh40Q",
+      "name": "campaign"
+    }
+  ]
+}

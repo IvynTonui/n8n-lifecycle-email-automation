@@ -1,0 +1,211 @@
+{
+  "name": "[SEGMENT] Delivered Orders — Segmentation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 0 * * *"
+            }
+          ]
+        }
+      },
+      "id": "f2aa1bd2-b3f0-4658-8f6a-99691ab75166",
+      "name": "Daily 00:30 UTC (03:30 EAT)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -656,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Find all customers with at least one delivered order\nSELECT DISTINCT\n    au.id AS user_id,\n    au.email,\n    'delivered_orders' AS segment_name\nFROM auth_user au\nINNER JOIN orders o ON au.id = o.user_id\nWHERE au.role = 'CUSTOMER'\n  AND au.deleted = false\n  AND au.enable = true\n  AND au.email_verified = true\n  AND o.deleted = false\n  AND o.status = 'DELIVERED';",
+        "options": {}
+      },
+      "id": "06a26d67-d496-4938-8bf9-8be6724f1d6a",
+      "name": "Fetch segment members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -448,
+        112
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-results",
+              "leftValue": "={{ $json.user_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "ef01cc5c-eed3-415e-a5b2-ff1c674fea5a",
+      "name": "Any members?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Upsert: insert new members, refresh segmented_at for existing ones\n-- IMPORTANT: do NOT touch campaign_last_sent_at — preserves cooldown timestamps\nINSERT INTO user_segments (user_id, email, segment_name, segmented_at)\nVALUES ($1, $2, $3, NOW())\nON CONFLICT (user_id, segment_name)\nDO UPDATE SET\n    segmented_at = NOW(),\n    email = EXCLUDED.email;",
+        "options": {
+          "queryReplacement": "={{ $json.user_id }},={{ $json.email }},={{ $json.segment_name }}"
+        }
+      },
+      "id": "2dca6084-c239-4d73-9c67-444a92b34c1e",
+      "name": "Upsert into user_segments",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Remove users no longer in the segment\n-- (e.g., their delivered order was refunded/deleted, account disabled, etc.)\nDELETE FROM user_segments\nWHERE segment_name = 'delivered_orders'\n  AND user_id NOT IN (\n      SELECT DISTINCT au.id\n      FROM auth_user au\n      INNER JOIN orders o ON au.id = o.user_id\n      WHERE au.role = 'CUSTOMER'\n        AND au.deleted = false\n        AND au.enable = true\n        AND au.email_verified = true\n        AND o.deleted = false\n        AND o.status = 'DELIVERED'\n  );",
+        "options": {}
+      },
+      "id": "e0963a27-0a3b-4f02-94f9-296347f1d9d9",
+      "name": "Remove stale members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        224,
+        0
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "da12808f-b834-4268-9a84-3341d0b2ca0e",
+      "name": "No members — clean exit",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch segment members": {
+      "main": [
+        [
+          {
+            "node": "Any members?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any members?": {
+      "main": [
+        [
+          {
+            "node": "Upsert into user_segments",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No members — clean exit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert into user_segments": {
+      "main": [
+        [
+          {
+            "node": "Remove stale members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 00:30 UTC (03:30 EAT)": {
+      "main": [
+        [
+          {
+            "node": "Fetch segment members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "6a639297-01d2-46b0-9e1b-329a11de8747",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "FAKE_INSTANCE_ID"
+  },
+  "id": "9Gom34GBHNbUWUfb",
+  "tags": [
+    {
+      "updatedAt": "2026-04-28T13:52:30.670Z",
+      "createdAt": "2026-04-28T13:52:30.670Z",
+      "id": "XdhVNGNhJoFWJAue",
+      "name": "segmentation"
+    }
+  ]
+}

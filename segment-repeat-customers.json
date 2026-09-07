@@ -1,0 +1,208 @@
+{
+  "name": "[SEGMENT] Repeat Customers — Segmentation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "15 0 * * *"
+            }
+          ]
+        }
+      },
+      "id": "188bdcc0-cad6-4fa6-900b-1fde2e27d524",
+      "name": "Daily 00:15 UTC (03:15 EAT)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -656,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Repeat customers: 2+ real orders (excluding DRAFT and CANCELED)\n-- COALESCE handles NULL order_state values (most non-DRAFT orders have NULL here)\nSELECT\n    au.id AS user_id,\n    au.email,\n    'repeat_customers' AS segment_name\nFROM auth_user au\nINNER JOIN (\n    SELECT user_id, COUNT(*) AS order_count\n    FROM orders\n    WHERE deleted = false\n      AND COALESCE(order_state, '') != 'DRAFT'\n      AND status != 'CANCELED'\n    GROUP BY user_id\n    HAVING COUNT(*) >= 2\n) o ON au.id = o.user_id\nWHERE au.role = 'CUSTOMER'\n  AND au.deleted = false\n  AND au.enable = true\n  AND au.email_verified = true;",
+        "options": {}
+      },
+      "id": "233cdbc1-9b63-4942-8d6c-54204fa2c06b",
+      "name": "Fetch segment members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -448,
+        112
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-results",
+              "leftValue": "={{ $json.user_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9530d87e-86d6-4659-ac3f-2ba96b832fa1",
+      "name": "Any members?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Upsert: insert new members, refresh segmented_at for existing ones\n-- IMPORTANT: do NOT touch campaign_last_sent_at — preserves cooldown timestamps\nINSERT INTO user_segments (user_id, email, segment_name, segmented_at)\nVALUES ($1, $2, $3, NOW())\nON CONFLICT (user_id, segment_name)\nDO UPDATE SET\n    segmented_at = NOW(),\n    email = EXCLUDED.email;",
+        "options": {
+          "queryReplacement": "={{ $json.user_id }},={{ $json.email }},={{ $json.segment_name }}"
+        }
+      },
+      "id": "ba582eeb-3a37-493c-ab44-40666110a350",
+      "name": "Upsert into user_segments",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Remove users no longer in the segment\n-- (e.g., orders deleted, account disabled, drops below 2 orders, etc.)\nDELETE FROM user_segments\nWHERE segment_name = 'repeat_customers'\n  AND user_id NOT IN (\n      SELECT au.id\n      FROM auth_user au\n      INNER JOIN (\n          SELECT user_id, COUNT(*) AS order_count\n          FROM orders\n          WHERE deleted = false\n            AND COALESCE(order_state, '') != 'DRAFT'\n            AND status != 'CANCELED'\n          GROUP BY user_id\n          HAVING COUNT(*) >= 2\n      ) o ON au.id = o.user_id\n      WHERE au.role = 'CUSTOMER'\n        AND au.deleted = false\n        AND au.enable = true\n        AND au.email_verified = true\n  );",
+        "options": {}
+      },
+      "id": "13a4fa53-11b5-417f-948f-d503a1c1c985",
+      "name": "Remove stale members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        224,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "cadcb9b8-ca85-46df-894b-b01fe30ab04c",
+      "name": "No members — clean exit",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch segment members": {
+      "main": [
+        [
+          {
+            "node": "Any members?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any members?": {
+      "main": [
+        [
+          {
+            "node": "Upsert into user_segments",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No members — clean exit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert into user_segments": {
+      "main": [
+        [
+          {
+            "node": "Remove stale members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 00:15 UTC (03:15 EAT)": {
+      "main": [
+        [
+          {
+            "node": "Fetch segment members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "81f31511-0ef5-4a10-a782-ad8c9748a67c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "FAKE_INSTANCE_ID"
+  },
+  "id": "juiuoKtt0g4HTBd2",
+  "tags": [
+    {
+      "updatedAt": "2026-04-28T13:52:30.670Z",
+      "createdAt": "2026-04-28T13:52:30.670Z",
+      "id": "XdhVNGNhJoFWJAue",
+      "name": "segmentation"
+    }
+  ]
+}

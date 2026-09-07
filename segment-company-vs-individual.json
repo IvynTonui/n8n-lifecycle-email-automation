@@ -1,0 +1,267 @@
+{
+  "name": "[SEGMENT] Company vs Individual — Segmentation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 1 * * *"
+            }
+          ]
+        }
+      },
+      "id": "31f56c54-7188-45e5-98bd-0ec20e6d3020",
+      "name": "Daily 01:00 UTC (04:00 EAT)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Company users\nSELECT\n    au.id AS user_id,\n    au.email,\n    'company_users' AS segment_name\nFROM auth_user au\nWHERE au.role = 'CUSTOMER'\n  AND au.deleted = false\n  AND au.enable = true\n  AND au.email_verified = true\n  AND au.user_type = 'COMPANY';",
+        "options": {}
+      },
+      "id": "5805d851-8dfb-4fba-ac93-e2c909eb9c7c",
+      "name": "Fetch company users",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Individual users\nSELECT\n    au.id AS user_id,\n    au.email,\n    'individual_users' AS segment_name\nFROM auth_user au\nWHERE au.role = 'CUSTOMER'\n  AND au.deleted = false\n  AND au.enable = true\n  AND au.email_verified = true\n  AND au.user_type = 'INDIVIDUAL';",
+        "options": {}
+      },
+      "id": "0e00ca03-d569-4e70-9544-b22055f84a7c",
+      "name": "Fetch individual users",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        208
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "c5aee0d0-4066-487c-a89c-bcf53c0291a5",
+      "name": "Merge all segments",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-results",
+              "leftValue": "={{ $json.user_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6f74d50a-3d35-4742-ba43-6683ed370179",
+      "name": "Any members?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Upsert: insert new members, refresh segmented_at for existing ones\nINSERT INTO user_segments (user_id, email, segment_name, segmented_at)\nVALUES ($1, $2, $3, NOW())\nON CONFLICT (user_id, segment_name)\nDO UPDATE SET\n    segmented_at = NOW(),\n    email = EXCLUDED.email;",
+        "options": {
+          "queryReplacement": "={{ $json.user_id }},={{ $json.email }},={{ $json.segment_name }}"
+        }
+      },
+      "id": "36aed231-d496-4a80-8bee-ffd9105d602d",
+      "name": "Upsert into user_segments",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        672,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Remove stale members across both segments\nDELETE FROM user_segments\nWHERE segment_name = 'company_users'\n  AND user_id NOT IN (\n      SELECT au.id FROM auth_user au\n      WHERE au.role = 'CUSTOMER'\n        AND au.deleted = false\n        AND au.enable = true\n        AND au.email_verified = true\n        AND au.user_type = 'COMPANY'\n  );\n\nDELETE FROM user_segments\nWHERE segment_name = 'individual_users'\n  AND user_id NOT IN (\n      SELECT au.id FROM auth_user au\n      WHERE au.role = 'CUSTOMER'\n        AND au.deleted = false\n        AND au.enable = true\n        AND au.email_verified = true\n        AND au.user_type = 'INDIVIDUAL'\n  );",
+        "options": {}
+      },
+      "id": "f6f035b2-4d50-4a40-b96a-c9f4c4e68b40",
+      "name": "Remove stale members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        880,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "9b2886cf-e2a2-4efc-b718-9c9bd4e3708a",
+      "name": "No members — clean exit",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        672,
+        208
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch company users": {
+      "main": [
+        [
+          {
+            "node": "Merge all segments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch individual users": {
+      "main": [
+        [
+          {
+            "node": "Merge all segments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge all segments": {
+      "main": [
+        [
+          {
+            "node": "Any members?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any members?": {
+      "main": [
+        [
+          {
+            "node": "Upsert into user_segments",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No members — clean exit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert into user_segments": {
+      "main": [
+        [
+          {
+            "node": "Remove stale members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 01:00 UTC (04:00 EAT)": {
+      "main": [
+        [
+          {
+            "node": "Fetch company users",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch individual users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "d3ebae6e-db2d-4850-bb2a-9ddfd30b6c82",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "FAKE_INSTANCE_ID"
+  },
+  "id": "mWAJ3Dqc5eXrguMe",
+  "tags": [
+    {
+      "updatedAt": "2026-04-28T13:52:30.670Z",
+      "createdAt": "2026-04-28T13:52:30.670Z",
+      "id": "XdhVNGNhJoFWJAue",
+      "name": "segmentation"
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+{
+  "name": "[SEGMENT] Agents vs Customers — Segmentation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 0 * * *"
+            }
+          ]
+        }
+      },
+      "id": "f5b31c00-4d59-428c-8dd5-7bb83b79edfd",
+      "name": "Daily 00:45 UTC (03:45 EAT)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -224,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Direct customers: no referring agent\nSELECT\n    au.id AS user_id,\n    au.email,\n    'direct_customers' AS segment_name\nFROM auth_user au\nWHERE au.role = 'CUSTOMER'\n  AND au.deleted = false\n  AND au.enable = true\n  AND au.email_verified = true\n  AND au.referring_agent_id IS NULL;",
+        "options": {}
+      },
+      "id": "3a2ab415-c656-4be2-90bb-966554f3933f",
+      "name": "Fetch direct customers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Agent-referred customers: has a referring agent\nSELECT\n    au.id AS user_id,\n    au.email,\n    'agent_referred_customers' AS segment_name\nFROM auth_user au\nWHERE au.role = 'CUSTOMER'\n  AND au.deleted = false\n  AND au.enable = true\n  AND au.email_verified = true\n  AND au.referring_agent_id IS NOT NULL;",
+        "options": {}
+      },
+      "id": "f43b292e-889c-44de-ab0d-4dd71a55d374",
+      "name": "Fetch agent-referred customers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        208
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Agents themselves (for agent-specific campaigns)\n-- Note: agent filter doesn't include email_verified — check with team if needed\nSELECT\n    au.id AS user_id,\n    au.email,\n    'agents' AS segment_name\nFROM auth_user au\nWHERE au.role = 'AGENT'\n  AND au.deleted = false\n  AND au.enable = true;",
+        "options": {}
+      },
+      "id": "09990eb8-ecaa-463a-b913-e68ed1f902f5",
+      "name": "Fetch agents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "9cb03bfb-ede2-40b8-b722-c6eecaf72664",
+      "name": "Merge all segments",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        224,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-results",
+              "leftValue": "={{ $json.user_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1274548f-93ca-4820-98a1-6ccc7564f76e",
+      "name": "Any members?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Upsert: insert new members, refresh segmented_at for existing ones\n-- Each item has its own segment_name, so this routes correctly\nINSERT INTO user_segments (user_id, email, segment_name, segmented_at)\nVALUES ($1, $2, $3, NOW())\nON CONFLICT (user_id, segment_name)\nDO UPDATE SET\n    segmented_at = NOW(),\n    email = EXCLUDED.email;",
+        "options": {
+          "queryReplacement": "={{ $json.user_id }},={{ $json.email }},={{ $json.segment_name }}"
+        }
+      },
+      "id": "37d42a1d-18d8-461f-aafb-46f2664cf6d9",
+      "name": "Upsert into user_segments",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        672,
+        112
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Remove stale members across all 3 segments\nDELETE FROM user_segments\nWHERE segment_name = 'direct_customers'\n  AND user_id NOT IN (\n      SELECT au.id FROM auth_user au\n      WHERE au.role = 'CUSTOMER'\n        AND au.deleted = false\n        AND au.enable = true\n        AND au.email_verified = true\n        AND au.referring_agent_id IS NULL\n  );\n\nDELETE FROM user_segments\nWHERE segment_name = 'agent_referred_customers'\n  AND user_id NOT IN (\n      SELECT au.id FROM auth_user au\n      WHERE au.role = 'CUSTOMER'\n        AND au.deleted = false\n        AND au.enable = true\n        AND au.email_verified = true\n        AND au.referring_agent_id IS NOT NULL\n  );\n\nDELETE FROM user_segments\nWHERE segment_name = 'agents'\n  AND user_id NOT IN (\n      SELECT au.id FROM auth_user au\n      WHERE au.role = 'AGENT'\n        AND au.deleted = false\n        AND au.enable = true\n  );",
+        "options": {}
+      },
+      "id": "dcc341c0-d89d-4fbd-a5c2-2a9edb66748e",
+      "name": "Remove stale members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        880,
+        112
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "FAKE_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "39dc1830-efc7-41d9-a31e-43408b650193",
+      "name": "No members — clean exit",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        672,
+        304
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch direct customers": {
+      "main": [
+        [
+          {
+            "node": "Merge all segments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch agent-referred customers": {
+      "main": [
+        [
+          {
+            "node": "Merge all segments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch agents": {
+      "main": [
+        [
+          {
+            "node": "Merge all segments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge all segments": {
+      "main": [
+        [
+          {
+            "node": "Any members?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any members?": {
+      "main": [
+        [
+          {
+            "node": "Upsert into user_segments",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No members — clean exit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert into user_segments": {
+      "main": [
+        [
+          {
+            "node": "Remove stale members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 00:45 UTC (03:45 EAT)": {
+      "main": [
+        [
+          {
+            "node": "Fetch direct customers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch agent-referred customers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "d962ce17-1522-4e21-a32a-4bd953fc4456",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "FAKE_INSTANCE_ID"
+  },
+  "id": "71waoD5pk6WpQiNs",
+  "tags": [
+    {
+      "updatedAt": "2026-04-28T13:52:30.670Z",
+      "createdAt": "2026-04-28T13:52:30.670Z",
+      "id": "XdhVNGNhJoFWJAue",
+      "name": "segmentation"
+    }
+  ]
+}
